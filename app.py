@@ -137,8 +137,9 @@ class AttendanceApp:
                  font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_PANEL).pack()
 
         cam_wrap = tk.Frame(f, bg="black", highlightthickness=1,
-                            highlightbackground="#30363d")
-        cam_wrap.pack(padx=14, pady=10, fill="both", expand=True)
+                            highlightbackground="#30363d", height=240)
+        cam_wrap.pack(padx=14, pady=8, fill="x")
+        cam_wrap.pack_propagate(False)   # fixed height — never pushes form down
         self.reg_cam_lbl = tk.Label(cam_wrap, bg="black",
                                     text="Camera Off", fg=FG_MUTED,
                                     font=("Segoe UI", 12))
@@ -212,9 +213,9 @@ class AttendanceApp:
             count = len(ids)
         self.reg_count_lbl.config(text=f"Total Registrations: {count}")
 
-    def _frame_to_imgtk(self, frame, label_widget):
+    def _frame_to_imgtk(self, frame, label_widget, fixed_h=None):
         w = label_widget.winfo_width()  or 480
-        h = label_widget.winfo_height() or 300
+        h = fixed_h or label_widget.winfo_height() or 300
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb).resize((max(w, 80), max(h, 60)), Image.LANCZOS)
         return ImageTk.PhotoImage(image=img)
@@ -467,7 +468,7 @@ class AttendanceApp:
                             (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, color, 2)
 
-        imgtk = self._frame_to_imgtk(frame, self.reg_cam_lbl)
+        imgtk = self._frame_to_imgtk(frame, self.reg_cam_lbl, fixed_h=240)
         self.reg_cam_lbl.imgtk = imgtk
         self.reg_cam_lbl.config(image=imgtk, text="")
 
