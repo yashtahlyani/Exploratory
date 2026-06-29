@@ -1,5 +1,10 @@
-opencv-contrib-python>=4.8.0
+# Core computer-vision and ML
+opencv-contrib-python>=4.8.0   # Haar cascade + LBPH recognizer
+
+# Image handling
 Pillow>=10.0.0
-pandas>=2.0.0
 numpy>=1.24.0
-openpyxl>=3.1.0
+
+# Data / attendance records
+pandas>=2.0.0
+openpyxl>=3.1.0                # Excel export (pandas xlsx backend)

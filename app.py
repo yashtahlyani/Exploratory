@@ -9,26 +9,14 @@ from datetime import datetime
 
 from face_trainer import FaceTrainer
 from attendance_manager import AttendanceManager
+from config import (
+    CONFIDENCE_THRESHOLD, MIN_FACE_PX, CAPTURE_EVERY_N, TARGET_IMAGES,
+    DATASET_DIR, STUDENT_CSV,
+    BG_DARK, BG_PANEL, BG_CARD,
+    ACCENT, ACCENT2, FG_WHITE, FG_MUTED, GREEN, ORANGE, PURPLE,
+)
 
 CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-DATASET_DIR = "dataset"
-STUDENT_CSV = "student_details.csv"
-
-# --- tuning constants ---
-CONFIDENCE_THRESHOLD = 80   # LBPH: lower=better match; <80 = recognized
-MIN_FACE_PX = 50            # ignore faces smaller than this (px)
-CAPTURE_EVERY_N = 4         # save 1 image every N frames for diversity
-
-# --- colours ---
-BG_DARK   = "#0d1117"
-BG_PANEL  = "#161b22"
-BG_CARD   = "#21262d"
-ACCENT    = "#e94560"
-ACCENT2   = "#1f6feb"
-FG_WHITE  = "#f0f6fc"
-FG_MUTED  = "#8b949e"
-GREEN     = "#3fb950"
-ORANGE    = "#d29922"
 
 
 class AttendanceApp:
@@ -44,17 +32,17 @@ class AttendanceApp:
         self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 
         # cameras
-        self.att_cam  = None
-        self.reg_cam  = None
+        self.att_cam: cv2.VideoCapture | None = None
+        self.reg_cam: cv2.VideoCapture | None = None
 
         # state
         self.att_running     = False
         self.reg_cam_on      = False
         self.is_capturing    = False
         self.img_count       = 0
-        self._cap_frame_tick = 0          # frame counter for diversity throttle
+        self._cap_frame_tick = 0
         self.recognizer      = None
-        self._student_map: dict = {}      # cached — refreshed on attendance start
+        self._student_map: dict = {}
 
         self.student_id   = tk.StringVar()
         self.student_name = tk.StringVar()
@@ -139,7 +127,7 @@ class AttendanceApp:
         cam_wrap = tk.Frame(f, bg="black", highlightthickness=1,
                             highlightbackground="#30363d", height=240)
         cam_wrap.pack(padx=14, pady=8, fill="x")
-        cam_wrap.pack_propagate(False)   # fixed height — never pushes form down
+        cam_wrap.pack_propagate(False)
         self.reg_cam_lbl = tk.Label(cam_wrap, bg="black",
                                     text="Camera Off", fg=FG_MUTED,
                                     font=("Segoe UI", 12))
@@ -156,8 +144,9 @@ class AttendanceApp:
             fg=ORANGE, bg=BG_PANEL)
         self.reg_capture_status.pack(pady=(4, 0))
 
-        self.img_count_lbl = tk.Label(f, text="Images Captured: 0 / 50",
-                                      font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_PANEL)
+        self.img_count_lbl = tk.Label(
+            f, text=f"Images Captured: 0 / {TARGET_IMAGES}",
+            font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_PANEL)
         self.img_count_lbl.pack()
         self.reg_count_lbl = tk.Label(f, text="Total Registrations: 0",
                                       font=("Segoe UI", 9), fg=GREEN, bg=BG_PANEL)
@@ -166,7 +155,7 @@ class AttendanceApp:
         btn_row = tk.Frame(f, bg=BG_PANEL)
         btn_row.pack(pady=(0, 14))
 
-        self.cam_btn = self._btn(btn_row, "Start Camera", "#533483",
+        self.cam_btn = self._btn(btn_row, "Start Camera", PURPLE,
                                  self._toggle_reg_camera)
         self.cam_btn.pack(side="left", padx=4)
 
@@ -220,7 +209,7 @@ class AttendanceApp:
         img = Image.fromarray(rgb).resize((max(w, 80), max(h, 60)), Image.LANCZOS)
         return ImageTk.PhotoImage(image=img)
 
-    def _open_camera(self):
+    def _open_camera(self) -> cv2.VideoCapture | None:
         """Open camera with DirectShow (reliable on Windows)."""
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not cap.isOpened():
@@ -228,7 +217,6 @@ class AttendanceApp:
                                  "Could not open webcam.\n"
                                  "Make sure it is connected and not in use.")
             return None
-        # test a read
         ret, _ = cap.read()
         if not ret:
             cap.release()
@@ -280,7 +268,6 @@ class AttendanceApp:
                                  "Register students and click Train & Save first.")
             return
 
-        # Stop registration camera if running — avoid dual-camera conflict
         if self.reg_cam_on:
             self._stop_reg_camera()
 
@@ -288,9 +275,9 @@ class AttendanceApp:
         if cam is None:
             return
 
-        self.att_cam = cam
+        self.att_cam    = cam
         self.recognizer = self.trainer.load_recognizer()
-        self._student_map = self._load_student_map()   # cache once per session
+        self._student_map = self._load_student_map()
         self.att_running = True
         self.att_btn.config(text="Stop", bg=GREEN)
         self.att_status.config(text="Scanning…", fg=FG_MUTED)
@@ -361,7 +348,6 @@ class AttendanceApp:
             self._start_reg_camera()
 
     def _start_reg_camera(self):
-        # Stop attendance camera if running
         if self.att_running:
             self._stop_attendance()
 
@@ -369,19 +355,19 @@ class AttendanceApp:
         if cam is None:
             return
 
-        self.reg_cam = cam
+        self.reg_cam    = cam
         self.reg_cam_on = True
         self.cam_btn.config(text="Stop Camera", bg=GREEN)
         self.cap_btn.config(state="normal")
         self._reg_preview_loop()
 
     def _stop_reg_camera(self):
-        self.reg_cam_on  = False
+        self.reg_cam_on   = False
         self.is_capturing = False
         if self.reg_cam:
             self.reg_cam.release()
             self.reg_cam = None
-        self.cam_btn.config(text="Start Camera", bg="#533483")
+        self.cam_btn.config(text="Start Camera", bg=PURPLE)
         self.cap_btn.config(state="disabled")
         self.reg_cam_lbl.config(image="", text="Camera Off", fg=FG_MUTED)
         self.reg_capture_status.config(text="")
@@ -432,11 +418,10 @@ class AttendanceApp:
                     text="No face detected — move closer", fg=ORANGE)
             else:
                 self.reg_capture_status.config(
-                    text=f"Capturing… {self.img_count}/50", fg=GREEN)
+                    text=f"Capturing… {self.img_count}/{TARGET_IMAGES}", fg=GREEN)
 
-            # save one face every CAPTURE_EVERY_N frames for image diversity
             if self._cap_frame_tick % CAPTURE_EVERY_N == 0 and len(faces) > 0:
-                x, y, w, h = faces[0]   # use the largest/first face only
+                x, y, w, h = faces[0]
                 self.img_count += 1
                 face_gray = gray[y: y + h, x: x + w]
                 path = os.path.join(
@@ -446,25 +431,26 @@ class AttendanceApp:
                 cv2.imwrite(path, face_gray)
 
             self.img_count_lbl.config(
-                text=f"Images Captured: {self.img_count} / 50")
+                text=f"Images Captured: {self.img_count} / {TARGET_IMAGES}")
 
-            if self.img_count >= 50:
+            if self.img_count >= TARGET_IMAGES:
                 self.is_capturing = False
                 self.cap_btn.config(text="Take Images", state="normal", bg=ACCENT)
-                self.reg_capture_status.config(text="50 images captured!", fg=GREEN)
+                self.reg_capture_status.config(
+                    text=f"{TARGET_IMAGES} images captured!", fg=GREEN)
                 self._refresh_reg_count()
                 messagebox.showinfo(
                     "Capture Complete",
-                    f"50 images captured for {self.student_name.get().strip()}!\n\n"
+                    f"{TARGET_IMAGES} images captured for "
+                    f"{self.student_name.get().strip()}!\n\n"
                     "Click  Train & Save  to update the recognition model."
                 )
 
-        # draw rectangles on preview
         for (x, y, w, h) in faces:
             color = (0, 200, 0) if self.is_capturing else (255, 165, 0)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             if self.is_capturing:
-                cv2.putText(frame, f"{self.img_count}/50",
+                cv2.putText(frame, f"{self.img_count}/{TARGET_IMAGES}",
                             (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, color, 2)
 
@@ -480,11 +466,11 @@ class AttendanceApp:
         ):
             messagebox.showerror(
                 "No Dataset",
-                "Dataset folder is empty.\nCapture images for at least one student first."
+                "Dataset folder is empty.\n"
+                "Capture images for at least one student first."
             )
             return
 
-        # disable buttons during training
         self.train_btn.config(text="Training…", state="disabled", bg=FG_MUTED)
         self.root.update()
 
@@ -511,7 +497,7 @@ class AttendanceApp:
 
         win = tk.Toplevel(self.root)
         win.title("Attendance Records")
-        win.geometry("780x520")
+        win.geometry("780x560")
         win.configure(bg=BG_DARK)
         win.grab_set()
 
@@ -528,7 +514,6 @@ class AttendanceApp:
                              width=36, state="readonly")
         combo.pack(side="left")
 
-        # treeview
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Records.Treeview",
@@ -543,7 +528,6 @@ class AttendanceApp:
         tree_frame = tk.Frame(win, bg=BG_DARK)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=6)
 
-        # scrollbar MUST be packed before the treeview that expands
         sb = ttk.Scrollbar(tree_frame, orient="vertical")
         sb.pack(side="right", fill="y")
 
@@ -560,7 +544,7 @@ class AttendanceApp:
 
         count_lbl = tk.Label(win, text="", fg=GREEN, bg=BG_DARK,
                              font=("Segoe UI", 10))
-        count_lbl.pack(pady=(0, 10))
+        count_lbl.pack(pady=(0, 4))
 
         def load_records(*_):
             tree.delete(*tree.get_children())
@@ -572,6 +556,22 @@ class AttendanceApp:
             tree.tag_configure("present", foreground=GREEN)
             tree.tag_configure("absent",  foreground=ACCENT)
             count_lbl.config(text=f"Total present today: {len(df)}")
+
+        def export_excel():
+            selected = file_var.get()
+            if not selected:
+                return
+            try:
+                out = self.att_mgr.export_to_excel(selected)
+                messagebox.showinfo("Exported",
+                                    f"Saved as:\n{os.path.abspath(out)}")
+            except Exception as exc:
+                messagebox.showerror("Export Failed", str(exc))
+
+        btn_row = tk.Frame(win, bg=BG_DARK)
+        btn_row.pack(pady=(0, 12))
+        self._btn(btn_row, "Export to Excel", GREEN, export_excel).pack(side="left", padx=6)
+        self._btn(btn_row, "Close", FG_MUTED, win.destroy).pack(side="left", padx=6)
 
         combo.bind("<<ComboboxSelected>>", load_records)
         load_records()

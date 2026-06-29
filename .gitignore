@@ -18,6 +18,9 @@ trainer/
 Attendance/
 student_details.csv
 
+# Claude Code
+.claude/
+
 # IDE
 .vscode/
 .idea/
