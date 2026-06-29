@@ -3,11 +3,13 @@ import cv2
 import numpy as np
 from PIL import Image
 
+FACE_SIZE = (100, 100)   # resize all faces to this before training/predicting
+
 
 class FaceTrainer:
     DATASET_DIR = "dataset"
     TRAINER_DIR = "trainer"
-    MODEL_PATH = os.path.join("trainer", "trainer.yml")
+    MODEL_PATH  = os.path.join("trainer", "trainer.yml")
 
     def get_images_and_labels(self):
         image_paths = [
@@ -16,19 +18,18 @@ class FaceTrainer:
             if f.lower().endswith(".jpg")
         ]
 
-        face_samples = []
-        ids = []
+        face_samples, ids = [], []
 
-        for image_path in image_paths:
-            pil_img = Image.open(image_path).convert("L")
-            img_array = np.array(pil_img, dtype="uint8")
-
-            # Filename format: User.<id>.<sample>.jpg
-            parts = os.path.basename(image_path).split(".")
+        for path in image_paths:
+            parts = os.path.basename(path).split(".")
             try:
                 student_id = int(parts[1])
             except (IndexError, ValueError):
                 continue
+
+            pil_img   = Image.open(path).convert("L")
+            resized   = pil_img.resize(FACE_SIZE, Image.LANCZOS)
+            img_array = np.array(resized, dtype="uint8")
 
             face_samples.append(img_array)
             ids.append(student_id)
@@ -37,12 +38,12 @@ class FaceTrainer:
 
     def train(self) -> int:
         os.makedirs(self.TRAINER_DIR, exist_ok=True)
-        recognizer = cv2.face.LBPHFaceRecognizer_create()
         faces, ids = self.get_images_and_labels()
 
         if len(faces) == 0:
-            raise ValueError("No face images found in dataset.")
+            raise ValueError("No face images found in the dataset folder.")
 
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
         recognizer.train(faces, ids)
         recognizer.write(self.MODEL_PATH)
         return len(set(ids))
@@ -54,3 +55,9 @@ class FaceTrainer:
         recognizer = cv2.face.LBPHFaceRecognizer_create()
         recognizer.read(self.MODEL_PATH)
         return recognizer
+
+    @staticmethod
+    def prepare_face(gray_roi) -> np.ndarray:
+        """Resize a face ROI to the training size before prediction."""
+        resized = cv2.resize(gray_roi, FACE_SIZE, interpolation=cv2.INTER_LANCZOS4)
+        return resized
