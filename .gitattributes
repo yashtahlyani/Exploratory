@@ -1,0 +1,16 @@
+# Normalize line endings to LF in the repository (silences CRLF warnings on Windows)
+* text=auto eol=lf
+
+# Treat binary assets correctly (never diff or convert)
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.onnx binary
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Notebooks are JSON — keep LF, and let GitHub render them
+*.ipynb text eol=lf linguist-language=Jupyter\ Notebook
+
+# Exclude generated / vendored content from language stats
+notebooks/* linguist-documentation
