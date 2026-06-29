@@ -1,44 +1,49 @@
 import os
+import logging
+
 import cv2
-import numpy as np
 import pandas as pd
 import tkinter as tk
 from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 from datetime import datetime
 
-from face_trainer import FaceTrainer
+import core
 from attendance_manager import AttendanceManager
 from analytics import AnalyticsWindow
 from student_registry import StudentRegistryWindow
+from core.pipeline import RecognitionPipeline, available_engines, engine_label
 from config import (
-    CONFIDENCE_THRESHOLD, MIN_FACE_PX, CAPTURE_EVERY_N, TARGET_IMAGES,
+    CAPTURE_EVERY_N, TARGET_IMAGES,
     DATASET_DIR, STUDENT_CSV,
     BG_DARK, BG_PANEL, BG_CARD,
-    ACCENT, ACCENT2, FG_WHITE, FG_MUTED, GREEN, ORANGE, PURPLE,
+    ACCENT, ACCENT2, FG_WHITE, FG_MUTED, GREEN, ORANGE, PURPLE, VIOLET,
 )
+
+log = logging.getLogger("app")
 
 # optional Windows audio feedback
 try:
     import winsound
-    _BEEP = lambda: winsound.Beep(1000, 180)
-except ImportError:
-    _BEEP = lambda: None
-
-CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    def _beep():
+        winsound.Beep(1000, 180)
+except ImportError:                       # non-Windows
+    def _beep():
+        pass
 
 
 class AttendanceApp:
     def __init__(self, root: tk.Tk):
+        core.configure_logging()
         self.root = root
         self.root.title("Face Recognition Based Attendance System")
-        self.root.geometry("1200x760")
-        self.root.minsize(1000, 660)
+        self.root.geometry("1220x780")
+        self.root.minsize(1040, 680)
         self.root.configure(bg=BG_DARK)
 
-        self.trainer      = FaceTrainer()
-        self.att_mgr      = AttendanceManager()
-        self.face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+        self.att_mgr  = AttendanceManager()
+        self.pipeline = RecognitionPipeline()
+        log.info("Started with engine '%s'", self.pipeline.engine_key)
 
         # cameras
         self.att_cam: cv2.VideoCapture | None = None
@@ -50,11 +55,11 @@ class AttendanceApp:
         self.is_capturing    = False
         self.img_count       = 0
         self._cap_frame_tick = 0
-        self.recognizer      = None
         self._student_map: dict = {}
 
-        # live-tuneable confidence threshold
-        self._conf_threshold = tk.IntVar(value=CONFIDENCE_THRESHOLD)
+        self._threshold   = tk.IntVar(value=int(self.pipeline.threshold))
+        self._augment_var = tk.BooleanVar(value=False)
+        self._engine_var  = tk.StringVar(value=self.pipeline.engine_label)
 
         self.student_id   = tk.StringVar()
         self.student_name = tk.StringVar()
@@ -96,51 +101,78 @@ class AttendanceApp:
         self.date_lbl.pack(anchor="e")
 
     def _build_toolbar(self):
-        """Thin secondary bar with global action buttons."""
-        bar = tk.Frame(self.root, bg=BG_CARD, height=38)
+        bar = tk.Frame(self.root, bg=BG_CARD, height=44)
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
-        inner = tk.Frame(bar, bg=BG_CARD)
-        inner.pack(side="left", padx=12, pady=4)
+        # left: global actions
+        left = tk.Frame(bar, bg=BG_CARD)
+        left.pack(side="left", padx=12, pady=5)
+        self._toolbar_btn(left, "Analytics", VIOLET, self._open_analytics).pack(side="left", padx=4)
+        self._toolbar_btn(left, "Manage Students", ACCENT2, self._open_student_registry).pack(side="left", padx=4)
+        self._toolbar_btn(left, "Export All →Excel", GREEN, self._export_all_excel).pack(side="left", padx=4)
 
-        self._toolbar_btn(inner, "Analytics",        "#8957e5", self._open_analytics).pack(side="left", padx=4)
-        self._toolbar_btn(inner, "Manage Students",  ACCENT2,   self._open_student_registry).pack(side="left", padx=4)
-        self._toolbar_btn(inner, "Export All →Excel", GREEN,    self._export_all_excel).pack(side="left", padx=4)
-
-        # threshold control (right side of toolbar)
+        # right: engine selector + threshold
         right = tk.Frame(bar, bg=BG_CARD)
-        right.pack(side="right", padx=16, pady=3)
-        tk.Label(right, text="Recognition Threshold:",
-                 font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD).pack(side="left")
-        self._thresh_val_lbl = tk.Label(right, width=4,
-                                        font=("Segoe UI", 9, "bold"),
-                                        fg=FG_WHITE, bg=BG_CARD)
-        self._thresh_val_lbl.pack(side="right", padx=(4, 0))
-        tk.Label(right, text="strict ←",
-                 font=("Segoe UI", 8), fg=FG_MUTED, bg=BG_CARD).pack(side="right")
-        slider = tk.Scale(right, from_=50, to=100, orient="horizontal",
-                          variable=self._conf_threshold, length=130,
-                          bg=BG_CARD, fg=FG_WHITE,
-                          troughcolor=BG_PANEL, highlightthickness=0,
-                          activebackground=ACCENT2, relief="flat",
-                          command=self._on_threshold_change)
-        slider.pack(side="right", padx=4)
-        tk.Label(right, text="→ loose",
-                 font=("Segoe UI", 8), fg=FG_MUTED, bg=BG_CARD).pack(side="right")
-        self._on_threshold_change(CONFIDENCE_THRESHOLD)   # init label
+        right.pack(side="right", padx=14, pady=4)
+
+        tk.Label(right, text="Engine:", font=("Segoe UI", 9),
+                 fg=FG_MUTED, bg=BG_CARD).pack(side="left", padx=(0, 4))
+        labels = [engine_label(k) for k in available_engines()]
+        self._engine_combo = ttk.Combobox(
+            right, textvariable=self._engine_var, values=labels,
+            state="readonly", width=26, font=("Segoe UI", 9))
+        self._engine_combo.pack(side="left", padx=(0, 14))
+        self._engine_combo.bind("<<ComboboxSelected>>", self._on_engine_change)
+
+        self._thresh_caption = tk.Label(
+            right, text="", font=("Segoe UI", 8), fg=FG_MUTED, bg=BG_CARD)
+        self._thresh_caption.pack(side="left", padx=(0, 6))
+
+        rng = self.pipeline.threshold_range()
+        self._thresh_slider = tk.Scale(
+            right, from_=rng[0], to=rng[1], orient="horizontal",
+            variable=self._threshold, length=130, resolution=1,
+            bg=BG_CARD, fg=FG_WHITE, troughcolor=BG_PANEL,
+            highlightthickness=0, activebackground=ACCENT2, relief="flat",
+            showvalue=True, command=self._on_threshold_change)
+        self._thresh_slider.pack(side="left")
+        self._sync_threshold_widgets()
 
     @staticmethod
     def _toolbar_btn(parent, text, color, cmd):
-        return tk.Button(parent, text=text,
-                         font=("Segoe UI", 9, "bold"),
-                         bg=color, fg="white",
-                         activebackground=color, activeforeground="white",
-                         relief="flat", padx=10, pady=3,
-                         cursor="hand2", bd=0, command=cmd)
+        return tk.Button(parent, text=text, font=("Segoe UI", 9, "bold"),
+                         bg=color, fg="white", activebackground=color,
+                         activeforeground="white", relief="flat",
+                         padx=10, pady=3, cursor="hand2", bd=0, command=cmd)
+
+    def _sync_threshold_widgets(self):
+        rng = self.pipeline.threshold_range()
+        self._thresh_slider.config(from_=rng[0], to=rng[1])
+        self._threshold.set(int(self.pipeline.threshold))
+        self._thresh_caption.config(text=self.pipeline.threshold_caption())
 
     def _on_threshold_change(self, val):
-        self._thresh_val_lbl.config(text=str(int(float(val))))
+        self.pipeline.threshold = float(val)
+
+    def _on_engine_change(self, _event=None):
+        # map the chosen label back to an engine key
+        target = next((k for k in available_engines()
+                       if engine_label(k) == self._engine_var.get()), None)
+        if target is None or target == self.pipeline.engine_key:
+            return
+        # switching engines touches the camera loops — stop them first
+        self._stop_attendance()
+        self._stop_reg_camera()
+        if self.pipeline.set_engine(target):
+            self._sync_threshold_widgets()
+            self._refresh_reg_count()
+            status = ("ready" if self.pipeline.model_exists()
+                      else "needs Train & Save")
+            messagebox.showinfo(
+                "Engine switched",
+                f"Now using:\n{self.pipeline.engine_label}\n\n"
+                f"Model status: {status}.")
 
     def _build_attendance_panel(self, parent):
         f = tk.Frame(parent, bg=BG_PANEL, highlightthickness=1,
@@ -165,7 +197,6 @@ class AttendanceApp:
                                    font=("Segoe UI", 10), fg=FG_MUTED, bg=BG_PANEL)
         self.att_status.pack(pady=4)
 
-        # live marked-today counter
         self.marked_count_lbl = tk.Label(f, text="Marked today: 0",
                                          font=("Segoe UI", 9), fg=GREEN, bg=BG_PANEL)
         self.marked_count_lbl.pack(pady=(0, 4))
@@ -215,7 +246,14 @@ class AttendanceApp:
         self.img_count_lbl.pack()
         self.reg_count_lbl = tk.Label(f, text="Total Registrations: 0",
                                       font=("Segoe UI", 9), fg=GREEN, bg=BG_PANEL)
-        self.reg_count_lbl.pack(pady=(0, 6))
+        self.reg_count_lbl.pack(pady=(0, 2))
+
+        tk.Checkbutton(
+            f, text="Augment data when training (improves robustness)",
+            variable=self._augment_var, font=("Segoe UI", 8),
+            fg=FG_MUTED, bg=BG_PANEL, selectcolor=BG_CARD,
+            activebackground=BG_PANEL, activeforeground=FG_WHITE,
+            highlightthickness=0, bd=0).pack(pady=(0, 4))
 
         btn_row = tk.Frame(f, bg=BG_PANEL)
         btn_row.pack(pady=(0, 14))
@@ -223,12 +261,10 @@ class AttendanceApp:
         self.cam_btn = self._btn(btn_row, "Start Camera", PURPLE,
                                  self._toggle_reg_camera)
         self.cam_btn.pack(side="left", padx=4)
-
         self.cap_btn = self._btn(btn_row, "Take Images", ACCENT,
                                  self._start_capture)
         self.cap_btn.pack(side="left", padx=4)
         self.cap_btn.config(state="disabled")
-
         self.train_btn = self._btn(btn_row, "Train & Save", ACCENT2,
                                    self._train_and_save)
         self.train_btn.pack(side="left", padx=4)
@@ -290,12 +326,6 @@ class AttendanceApp:
             return None
         return cap
 
-    def _detect_faces(self, gray):
-        return self.face_cascade.detectMultiScale(
-            gray, scaleFactor=1.3, minNeighbors=5,
-            minSize=(MIN_FACE_PX, MIN_FACE_PX)
-        )
-
     def _save_student(self, sid: str, name: str):
         try:
             sid_int = int(sid)
@@ -318,9 +348,8 @@ class AttendanceApp:
         return {}
 
     def _update_marked_count(self):
-        today = self.att_mgr.get_today_records()
         self.marked_count_lbl.config(
-            text=f"Marked today: {len(today)}")
+            text=f"Marked today: {len(self.att_mgr.get_today_records())}")
 
     # ======================================================== ATTENDANCE ====
 
@@ -331,10 +360,11 @@ class AttendanceApp:
             self._start_attendance()
 
     def _start_attendance(self):
-        if not self.trainer.model_exists():
-            messagebox.showerror("No Model",
-                                 "No trained model found.\n"
-                                 "Register students and click Train & Save first.")
+        if not self.pipeline.model_exists():
+            messagebox.showerror(
+                "No Model",
+                f"No trained model for the '{self.pipeline.engine_key}' engine.\n"
+                "Register students and click Train & Save first.")
             return
 
         if self.reg_cam_on:
@@ -345,7 +375,6 @@ class AttendanceApp:
             return
 
         self.att_cam      = cam
-        self.recognizer   = self.trainer.load_recognizer()
         self._student_map = self._load_student_map()
         self.att_running  = True
         self.att_btn.config(text="Stop", bg=GREEN)
@@ -372,46 +401,40 @@ class AttendanceApp:
             self.root.after(30, self._att_loop)
             return
 
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self._detect_faces(gray)
-        threshold = self._conf_threshold.get()
+        status_text, status_color = "No face detected", FG_MUTED
 
-        status_text  = "No face detected"
-        status_color = FG_MUTED
+        for det in self.pipeline.detect(frame):
+            result = self.pipeline.recognize(frame, det)
+            x, y, w, h = det.box
 
-        for (x, y, w, h) in faces:
-            face_roi        = FaceTrainer.prepare_face(gray[y: y + h, x: x + w])
-            sid, confidence = self.recognizer.predict(face_roi)
-
-            if confidence < threshold:
-                name         = self._student_map.get(sid, "Unknown")
-                conf_pct     = f"{round(100 - confidence)}%"
-                color        = (50, 205, 50)
-                newly        = self.att_mgr.mark_attendance(sid, name)
-                status_text  = (f"Marked: {name} ({conf_pct})"
-                                if newly else f"Already marked: {name} ({conf_pct})")
+            if result.recognized:
+                name  = self._student_map.get(result.student_id, "Unknown")
+                label = f"{name}"
+                conf  = f"{result.confidence_pct}%"
+                color = (50, 205, 50)
+                newly = self.att_mgr.mark_attendance(result.student_id, name)
+                status_text  = (f"Marked: {name} ({conf})" if newly
+                                else f"Already marked: {name} ({conf})")
                 status_color = GREEN
                 if newly:
-                    _BEEP()
+                    _beep()
                     self._update_marked_count()
             else:
-                name         = "Unknown"
-                conf_pct     = f"conf:{round(confidence)}"
-                color        = (60, 60, 220)
-                status_text  = "Face detected — not recognized"
-                status_color = ORANGE
+                label = "Unknown"
+                conf  = f"{result.confidence_pct}%"
+                color = (60, 60, 220)
+                status_text, status_color = "Face detected — not recognized", ORANGE
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(frame, name,     (x, y - 10),
+            cv2.putText(frame, label, (x, max(y - 10, 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-            cv2.putText(frame, conf_pct, (x, y + h + 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,  color, 2)
+            cv2.putText(frame, conf, (x, y + h + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
         self.att_status.config(text=status_text, fg=status_color)
         imgtk = self._frame_to_imgtk(frame, self.att_cam_lbl)
         self.att_cam_lbl.imgtk = imgtk
         self.att_cam_lbl.config(image=imgtk, text="")
-
         self.root.after(30, self._att_loop)
 
     # ===================================================== REGISTRATION =====
@@ -425,11 +448,9 @@ class AttendanceApp:
     def _start_reg_camera(self):
         if self.att_running:
             self._stop_attendance()
-
         cam = self._open_camera()
         if cam is None:
             return
-
         self.reg_cam    = cam
         self.reg_cam_on = True
         self.cam_btn.config(text="Stop Camera", bg=GREEN)
@@ -482,28 +503,27 @@ class AttendanceApp:
             self.root.after(30, self._reg_preview_loop)
             return
 
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self._detect_faces(gray)
+        detections = self.pipeline.detect(frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if self.is_capturing:
             self._cap_frame_tick += 1
-
-            if len(faces) == 0:
+            if not detections:
                 self.reg_capture_status.config(
                     text="No face detected — move closer", fg=ORANGE)
             else:
                 self.reg_capture_status.config(
                     text=f"Capturing… {self.img_count}/{TARGET_IMAGES}", fg=GREEN)
 
-            if self._cap_frame_tick % CAPTURE_EVERY_N == 0 and len(faces) > 0:
-                x, y, w, h = faces[0]
-                self.img_count += 1
-                face_gray = gray[y: y + h, x: x + w]
-                path = os.path.join(
-                    DATASET_DIR,
-                    f"User.{self.student_id.get().strip()}.{self.img_count}.jpg"
-                )
-                cv2.imwrite(path, face_gray)
+            if self._cap_frame_tick % CAPTURE_EVERY_N == 0 and detections:
+                x, y, w, h = detections[0].box
+                crop = gray[y:y + h, x:x + w]
+                if crop.size:
+                    self.img_count += 1
+                    path = os.path.join(
+                        DATASET_DIR,
+                        f"User.{self.student_id.get().strip()}.{self.img_count}.jpg")
+                    cv2.imwrite(path, crop)
 
             self.img_count_lbl.config(
                 text=f"Images Captured: {self.img_count} / {TARGET_IMAGES}")
@@ -518,47 +538,43 @@ class AttendanceApp:
                     "Capture Complete",
                     f"{TARGET_IMAGES} images captured for "
                     f"{self.student_name.get().strip()}!\n\n"
-                    "Click  Train & Save  to update the recognition model."
-                )
+                    "Click  Train & Save  to update the recognition model.")
 
-        for (x, y, w, h) in faces:
+        for det in detections:
+            x, y, w, h = det.box
             color = (0, 200, 0) if self.is_capturing else (255, 165, 0)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             if self.is_capturing:
                 cv2.putText(frame, f"{self.img_count}/{TARGET_IMAGES}",
-                            (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                            (x, max(y - 10, 12)), cv2.FONT_HERSHEY_SIMPLEX,
                             0.7, color, 2)
 
         imgtk = self._frame_to_imgtk(frame, self.reg_cam_lbl, fixed_h=240)
         self.reg_cam_lbl.imgtk = imgtk
         self.reg_cam_lbl.config(image=imgtk, text="")
-
         self.root.after(30, self._reg_preview_loop)
 
     def _train_and_save(self):
-        if not os.path.exists(DATASET_DIR) or not any(
-            f.lower().endswith(".jpg") for f in os.listdir(DATASET_DIR)
-        ):
+        from core import dataset as ds
+        if not ds.list_samples():
             messagebox.showerror(
                 "No Dataset",
                 "Dataset folder is empty.\n"
-                "Capture images for at least one student first."
-            )
+                "Capture images for at least one student first.")
             return
 
         self.train_btn.config(text="Training…", state="disabled", bg=FG_MUTED)
         self.root.update()
-
         try:
-            count = self.trainer.train()
+            count = self.pipeline.train(augment=self._augment_var.get())
             self.train_btn.config(text="Train & Save", state="normal", bg=ACCENT2)
             messagebox.showinfo(
                 "Training Complete",
-                f"Model trained on {count} student(s)!\n"
-                "You can now use Take Attendance."
-            )
+                f"'{self.pipeline.engine_key}' model trained on "
+                f"{count} student(s)!\nYou can now use Take Attendance.")
             self._refresh_reg_count()
         except Exception as exc:
+            log.exception("Training failed")
             self.train_btn.config(text="Train & Save", state="normal", bg=ACCENT2)
             messagebox.showerror("Training Failed", str(exc))
 
@@ -580,7 +596,6 @@ class AttendanceApp:
                  font=("Segoe UI", 15, "bold"), fg=FG_WHITE, bg=BG_DARK
                  ).pack(pady=12)
 
-        # date selector
         top = tk.Frame(win, bg=BG_DARK)
         top.pack(fill="x", padx=20, pady=(0, 6))
         tk.Label(top, text="Date:", fg=FG_WHITE, bg=BG_DARK,
@@ -590,18 +605,13 @@ class AttendanceApp:
                              width=34, state="readonly")
         combo.pack(side="left")
 
-        # search box
         tk.Label(top, text="Search:", fg=FG_WHITE, bg=BG_DARK,
                  font=("Segoe UI", 10)).pack(side="left", padx=(20, 6))
         search_var = tk.StringVar()
-        search_entry = tk.Entry(top, textvariable=search_var,
-                                font=("Segoe UI", 10),
-                                bg=BG_CARD, fg=FG_WHITE,
-                                insertbackground=FG_WHITE,
-                                relief="flat", bd=6, width=18)
-        search_entry.pack(side="left")
+        tk.Entry(top, textvariable=search_var, font=("Segoe UI", 10),
+                 bg=BG_CARD, fg=FG_WHITE, insertbackground=FG_WHITE,
+                 relief="flat", bd=6, width=18).pack(side="left")
 
-        # treeview
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Records.Treeview",
@@ -615,29 +625,24 @@ class AttendanceApp:
         cols = ("ID", "Name", "Time", "Status")
         tree_frame = tk.Frame(win, bg=BG_DARK)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=6)
-
         sb = ttk.Scrollbar(tree_frame, orient="vertical")
         sb.pack(side="right", fill="y")
-
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
                             style="Records.Treeview", yscrollcommand=sb.set)
         sb.config(command=tree.yview)
-
         col_widths = {"ID": 80, "Name": 240, "Time": 130, "Status": 100}
         for col in cols:
             tree.heading(col, text=col)
             tree.column(col, width=col_widths[col], anchor="center")
         tree.pack(side="left", fill="both", expand=True)
 
-        # stats label
         stats_lbl = tk.Label(win, text="", fg=GREEN, bg=BG_DARK,
                              font=("Segoe UI", 10))
         stats_lbl.pack(pady=(0, 4))
 
-        # store current df for search filtering
-        _current_df: list[pd.DataFrame] = [pd.DataFrame()]
+        _current_df = [pd.DataFrame()]
 
-        def populate_tree(df: pd.DataFrame):
+        def populate(df):
             tree.delete(*tree.get_children())
             for _, row in df.iterrows():
                 tag = ("present" if str(row.get("Status", "")).lower() == "present"
@@ -650,44 +655,32 @@ class AttendanceApp:
             df = self.att_mgr.load_file(file_var.get())
             _current_df[0] = df
             search_var.set("")
-            populate_tree(df)
+            populate(df)
             stats_lbl.config(
                 text=f"Present: {len(df)}  |  "
-                     f"Total enrolled: {len(self._load_student_map())}"
-            )
+                     f"Total enrolled: {len(self._load_student_map())}")
 
         def on_search(*_):
-            q   = search_var.get().strip().lower()
-            df  = _current_df[0]
-            filtered = (
-                df[df["Name"].astype(str).str.lower().str.contains(q, na=False)]
-                if q else df
-            )
-            populate_tree(filtered)
+            q  = search_var.get().strip().lower()
+            df = _current_df[0]
+            populate(df[df["Name"].astype(str).str.lower().str.contains(q, na=False)]
+                     if q else df)
 
         search_var.trace_add("write", on_search)
         combo.bind("<<ComboboxSelected>>", load_records)
 
-        # action buttons
         btn_row = tk.Frame(win, bg=BG_DARK)
         btn_row.pack(pady=(0, 12))
 
         def export_selected():
-            selected = file_var.get()
-            if not selected:
-                return
             try:
-                out = self.att_mgr.export_to_excel(selected)
-                messagebox.showinfo("Exported",
-                                    f"Saved:\n{os.path.abspath(out)}")
+                out = self.att_mgr.export_to_excel(file_var.get())
+                messagebox.showinfo("Exported", f"Saved:\n{os.path.abspath(out)}")
             except Exception as exc:
                 messagebox.showerror("Export Failed", str(exc))
 
-        self._btn(btn_row, "Export to Excel", GREEN,
-                  export_selected).pack(side="left", padx=5)
-        self._btn(btn_row, "Close", FG_MUTED,
-                  win.destroy).pack(side="left", padx=5)
-
+        self._btn(btn_row, "Export to Excel", GREEN, export_selected).pack(side="left", padx=5)
+        self._btn(btn_row, "Close", FG_MUTED, win.destroy).pack(side="left", padx=5)
         load_records()
 
     # =================================================== TOOLBAR ACTIONS ====
@@ -707,8 +700,7 @@ class AttendanceApp:
             out = self.att_mgr.export_all_to_excel()
             messagebox.showinfo(
                 "All Records Exported",
-                f"{len(files)} session(s) exported to:\n{os.path.abspath(out)}"
-            )
+                f"{len(files)} session(s) exported to:\n{os.path.abspath(out)}")
         except Exception as exc:
             messagebox.showerror("Export Failed", str(exc))
 

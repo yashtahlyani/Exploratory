@@ -2,13 +2,15 @@
 
 # Face Recognition Based Attendance System
 
-**Automated, contactless attendance marking using real-time face recognition**
+**A dual-engine, contactless attendance platform — classical computer vision *and* deep-learning face recognition, benchmarked side by side.**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.13-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white)](https://opencv.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![Institute](https://img.shields.io/badge/IIT_(BHU)-Varanasi-B22222?style=for-the-badge)](https://iitbhu.ac.in)
+
+[![CI](https://github.com/yashtahlyani/Exploratory/actions/workflows/ci.yml/badge.svg)](https://github.com/yashtahlyani/Exploratory/actions/workflows/ci.yml)
 
 <br/>
 
@@ -21,144 +23,134 @@
 
 ## The Problem
 
-Traditional classroom attendance is slow, error-prone, and breaks down at scale. A roll-call for 60 students takes 5–8 minutes of class time, proxy attendance is trivially easy, and paper sheets require manual digitisation. This project eliminates all of that: a single webcam marks every student automatically the moment they walk into frame — no buttons, no paper, no manual work.
+Traditional classroom attendance is slow, error-prone, and breaks down at scale. A roll-call for 60 students burns 5–8 minutes of class time, proxy attendance is trivially easy, and paper sheets need manual digitisation. This project replaces all of it: a single webcam marks every student automatically the moment they appear — no buttons, no paper, no manual work.
 
 ---
 
-## Solution Overview
+## What Makes This More Than a Demo
 
-A two-panel desktop application built entirely on commodity hardware and open-source libraries:
+Most student face-recognition projects stop at "it detects my face." This one is built like a real ML system:
 
-- **Registration** — enroll a student in under 2 minutes by capturing 50 facial images automatically
-- **Attendance** — real-time recognition at ~30 fps with a live-adjustable confidence threshold
-- **Records** — browse historical attendance by date with search/filter, export to Excel in one click
-- **Analytics** — matplotlib-powered charts: daily attendance trends and per-student attendance rates
-- **Student Registry** — view all enrolled students, see image counts, delete records with full cleanup
+- **Two interchangeable recognition engines** behind one clean interface — *classical* (Haar + LBPH) and *deep learning* (YuNet + SFace CNN embeddings). Switch live from a dropdown.
+- **A reproducible evaluation harness** (`evaluate.py`) that reports accuracy, precision, recall, F1 and a confusion matrix on a held-out test split — so quality is **measured, not claimed**.
+- **A test suite + CI** (pytest + GitHub Actions) that runs on every push.
+- **Data augmentation**, structured **logging**, a **config module**, and a **pre-flight environment checker**.
+- An analytics dashboard, Excel export, and a student registry on top of the live app.
 
-No internet connection. No cloud API. No GPU required. Runs entirely on a standard laptop.
-
----
-
-## Screenshot
-
-![Face Recognition Based Attendance System](assets/screenshot.png)
-
-> Left panel handles live attendance scanning. Right panel handles student registration. Global toolbar gives access to Analytics, Student Registry, and bulk Excel export.
+The classical engine is the proven default and needs zero downloads; the deep engine activates after a one-time 37 MB model fetch and degrades gracefully if absent.
 
 ---
 
-## Features
+## The Two Engines
 
-| Feature | Detail |
-|---|---|
-| Real-time face detection | OpenCV Haar Cascade, ~30 fps on CPU |
-| Face recognition | LBPH — lightweight, offline, no cloud dependency |
-| One-click registration | Captures 50 images automatically with diversity throttling |
-| Instant attendance marking | No button press once camera is running |
-| Audio beep on mark | Distinct audio feedback when a student is successfully marked |
-| Live threshold slider | Adjust recognition strictness without restarting the session |
-| Duplicate-safe | Each student marked once per day regardless of time in frame |
-| Dated CSV records | One file per day, color-coded present/absent rows |
-| Search / filter records | Live search by student name within the records window |
-| Excel export | Per-session or bulk (all dates → one workbook) `.xlsx` export |
-| Analytics dashboard | Daily trend bar chart + per-student attendance % horizontal bar |
-| Student Registry | View enrolled students, image counts, delete with full cleanup |
-| Camera conflict prevention | Opening one panel's camera auto-stops the other |
-| Pre-flight env check | `check_env.py` verifies all dependencies + webcam before first run |
-| Dark professional UI | Tkinter — no external UI framework needed |
+| | Classical | Deep Learning |
+|---|---|---|
+| **Detector** | Haar Cascade (2001) | **YuNet** CNN (2023) |
+| **Recognizer** | LBPH histograms (2006) | **SFace** CNN embeddings (2021) |
+| **Decision rule** | Chi-square *distance* | 128-D embedding **cosine similarity** |
+| **Training** | Instant, per-class texture model | Builds a per-student embedding gallery |
+| **Strengths** | Tiny, instant, no weights | Robust to pose/lighting, scales to many identities |
+| **Hardware** | CPU | CPU (no GPU needed) |
+| **Paradigm** | Hand-crafted features | Learned embeddings — same family as FaceNet / ArcFace |
 
----
-
-## Why LBPH?
-
-Three algorithms were evaluated during the Month 1 feasibility study:
-
-| Algorithm | Accuracy (10-student test set) | Inference time | GPU required? |
-|---|---|---|---|
-| **LBPH** | **94%** | ~2 ms | No |
-| FisherFaces | 91% | ~1 ms | No |
-| Eigenfaces | 88% | ~1 ms | No |
-
-LBPH was chosen because it is the most robust to lighting variation and partial occlusion while requiring zero GPU and only ~50 images per person to train reliably.
+Both run through the same `RecognitionPipeline`, which normalises their different score scales (distance vs. similarity) into one confidence value and one GUI threshold slider.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                       main.py                            │
-│              Tkinter root window entry point             │
-└────────────────────────┬─────────────────────────────────┘
-                         │
-              ┌──────────▼──────────┐
-              │       app.py        │
-              │   AttendanceApp     │   ← GUI controller (attendance
-              │                     │     + registration + records
-              └──┬───────────┬──────┘     + toolbar actions)
-                 │           │
-    ┌────────────▼──┐   ┌────▼──────────────┐
-    │ face_trainer  │   │attendance_manager  │
-    │ FaceTrainer   │   │ AttendanceManager  │
-    │               │   │                    │
-    │ • train()     │   │ • mark()           │
-    │ • predict()   │   │ • export_xlsx()    │
-    └───────┬───────┘   │ • export_all()     │
-            │           └────────┬───────────┘
-    ┌───────▼───────┐   ┌────────▼───────────┐
-    │   dataset/    │   │    Attendance/      │
-    │ User.ID.N.jpg │   │  DD-MM-YYYY.csv    │
-    └───────────────┘   │  Attendance_All.xlsx│
-                        └────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                            main.py                            │
+│                  Tkinter root window + lifecycle              │
+└───────────────────────────────┬───────────────────────────────┘
+                                │
+                     ┌──────────▼──────────┐
+                     │       app.py        │   GUI controller — never
+                     │   AttendanceApp     │   touches OpenCV directly
+                     └──────────┬──────────┘
+                                │ uses
+                     ┌──────────▼───────────────┐
+                     │  core/pipeline.py         │
+                     │  RecognitionPipeline      │  ← engine registry,
+                     │  (detector + recognizer)  │     graceful fallback,
+                     └───┬──────────────────┬────┘     unified threshold
+                         │                  │
+          ┌──────────────▼───┐     ┌────────▼──────────────┐
+          │ core/detectors.py│     │ core/recognizers.py    │
+          │  HaarDetector    │     │  LBPHRecognizer        │
+          │  YuNetDetector   │     │  SFaceRecognizer       │
+          └──────────────────┘     └────────────────────────┘
+                         │                  │
+                  ┌──────▼──────┐    ┌───────▼─────────┐
+                  │core/dataset │    │core/augmentation│
+                  └─────────────┘    └─────────────────┘
 
-    ┌──────────────────────────────┐
-    │       analytics.py           │     matplotlib charts
-    │   AnalyticsWindow            │  ←  (daily trend,
-    │   (Daily / Student / Summary)│      per-student %)
-    └──────────────────────────────┘
-
-    ┌──────────────────────────────┐
-    │     student_registry.py      │     view + delete
-    │   StudentRegistryWindow      │  ←  enrolled students
-    └──────────────────────────────┘
-
-    config.py  ←  single file for all tuneable constants
+  Built on the same core:
+     evaluate.py  → metrics + confusion matrix    tests/ → pytest + CI
+     analytics.py → matplotlib dashboard          config.py → all constants
 ```
 
-**Recognition pipeline per frame:**
+**Per-frame recognition pipeline:**
 
 ```
-Camera frame
-     │
-     ▼
-Haar Cascade detector ──► No face? ──► Skip frame
-     │
-     ▼ (face ROI ≥ 50×50 px)
-Resize to 100×100 px
-     │
-     ▼
-LBPH Recognizer.predict()
-     │
-     ├── confidence < threshold ──► Recognized ──► Mark in CSV + audio beep
-     │
-     └── confidence ≥ threshold ──► Unknown    ──► Show warning on screen
+Camera frame ─► Detector (Haar | YuNet) ─► face boxes
+                                              │
+                                   Recognizer (LBPH | SFace)
+                                              │
+                          ┌───────────────────┴───────────────────┐
+                   recognized (≥ threshold)              below threshold
+                          │                                       │
+              mark in CSV + audio beep                    show "Unknown"
 ```
+
+---
+
+## Live Results — Measured, Not Claimed
+
+Generate these yourself on your own enrolled dataset:
+
+```bash
+python evaluate.py                 # classical engine (Haar + LBPH)
+python evaluate.py --engine deep   # deep engine (YuNet + SFace)
+python evaluate.py --augment       # with training-time augmentation
+```
+
+Each run performs a stratified 70/30 train/test split per student and prints a full `scikit-learn` classification report plus an overall accuracy, and saves a confusion matrix to `assets/confusion_matrix_<engine>.png`. The interactive walkthrough lives in [`notebooks/model_evaluation.ipynb`](notebooks/model_evaluation.ipynb).
+
+> Methodology note: during the Month 1 feasibility study, LBPH reached ~94% on a 10-student set and was chosen over Eigenfaces (88%) and FisherFaces (91%) for its robustness to lighting. The deep engine was added later to push accuracy and scalability further; run the evaluator to reproduce the comparison on your data.
+
+---
+
+## Features
+
+| Area | Feature |
+|---|---|
+| Recognition | Two engines (classical + deep), switchable live from the toolbar |
+| Recognition | Unified confidence threshold slider, auto-ranged per engine |
+| Detection | Haar Cascade *or* YuNet CNN with landmark-based alignment |
+| Enrollment | One-click capture of 50 images with diversity throttling |
+| Robustness | Optional training-time **data augmentation** (flip, brightness, rotation) |
+| Attendance | Real-time marking, audio beep, live "marked today" counter, duplicate-safe |
+| Records | Dated CSV, color-coded table, live name search, per-session & bulk Excel export |
+| Analytics | matplotlib dashboard: daily trend, per-student %, summary metrics |
+| Admin | Student registry — view image counts, delete a student with full cleanup |
+| Engineering | `evaluate.py` metrics, pytest suite, GitHub Actions CI, logging, config module |
+| Onboarding | `check_env.py` pre-flight check, `download_models.py` weight fetcher |
 
 ---
 
 ## Tech Stack
 
-| Component | Library / Tool | Version |
-|---|---|---|
-| Face Detection | OpenCV Haar Cascade | 4.13 |
-| Face Recognition | OpenCV LBPH Recognizer | 4.13 |
-| GUI | Tkinter (built-in) + Pillow | Python 3.11 |
-| Analytics Charts | matplotlib (TkAgg backend) | 3.7+ |
-| Attendance Records | pandas + CSV | 2.x |
-| Excel Export | openpyxl | 3.x |
-| Image Processing | NumPy + Pillow | 2.x |
-| Camera Backend | DirectShow (Windows) | — |
-| Audio Feedback | winsound (built-in) | — |
+| Component | Library / Tool |
+|---|---|
+| Classical detection / recognition | OpenCV Haar Cascade · LBPH |
+| Deep detection / recognition | OpenCV `FaceDetectorYN` (YuNet) · `FaceRecognizerSF` (SFace) |
+| GUI | Tkinter + Pillow |
+| Data / records | pandas · openpyxl |
+| Analytics & evaluation | matplotlib · scikit-learn |
+| Testing & CI | pytest · ruff · GitHub Actions |
+| Camera backend | DirectShow (Windows) |
 
 ---
 
@@ -167,151 +159,103 @@ LBPH Recognizer.predict()
 ```
 Exploratory/
 │
-├── main.py                  # Entry point — launches the Tkinter app
-├── app.py                   # Full GUI: all panels, toolbar, records window
-├── face_trainer.py          # LBPH model training from captured face images
-├── attendance_manager.py    # Daily CSV logic + Excel export (single & bulk)
-├── analytics.py             # matplotlib Analytics window (3 tabs)
-├── student_registry.py      # Student Registry window (view + delete)
-├── config.py                # All tuneable constants in one place
-├── check_env.py             # Pre-flight dependency + webcam checker
+├── main.py                  # Entry point
+├── app.py                   # GUI controller (no direct OpenCV calls)
+├── config.py                # Every tuneable constant
 │
-├── requirements.txt         # pip dependencies
-├── LICENSE                  # MIT License
-├── README.md
+├── core/                    # Framework-agnostic recognition engine
+│   ├── detectors.py         #   Haar + YuNet detectors
+│   ├── recognizers.py       #   LBPH + SFace recognizers
+│   ├── pipeline.py          #   engine orchestration + fallback
+│   ├── augmentation.py      #   training-time augmentation
+│   └── dataset.py           #   dataset loading / label parsing
 │
-├── dataset/                 # Face images captured during registration (git-ignored)
-│   └── User.<id>.<n>.jpg
-├── trainer/                 # Trained LBPH model file (git-ignored)
-│   └── trainer.yml
-└── Attendance/              # Daily attendance files (git-ignored)
-    ├── Attendance_DD-MM-YYYY.csv
-    ├── Attendance_DD-MM-YYYY.xlsx
-    └── Attendance_All.xlsx  # bulk export
+├── attendance_manager.py    # Daily CSV logic + Excel export
+├── analytics.py             # matplotlib analytics window
+├── student_registry.py      # Student registry window
+├── face_trainer.py          # Back-compat shim → core
+│
+├── evaluate.py              # Reproducible metrics + confusion matrix
+├── download_models.py       # Fetch YuNet + SFace weights (OpenCV Zoo)
+├── check_env.py             # Pre-flight dependency + webcam check
+│
+├── tests/                   # pytest suite (augmentation, manager, recognizers, pipeline)
+├── notebooks/
+│   └── model_evaluation.ipynb
+├── .github/workflows/ci.yml # Lint + test on every push
+├── pyproject.toml           # ruff + pytest config
+├── requirements.txt
+├── requirements-dev.txt
+│
+├── dataset/    trainer/    Attendance/    models/    (all git-ignored, runtime)
+└── LICENSE   README.md
 ```
 
 ---
 
 ## Setup & Installation
 
-### Prerequisites
-
-- Python 3.11 or higher
-- A working webcam
-- Windows OS (uses DirectShow camera backend)
-
-### 1 — Clone the repository
-
 ```bash
+# 1 — clone
 git clone https://github.com/yashtahlyani/Exploratory.git
 cd Exploratory
-```
 
-### 2 — Install dependencies
-
-```bash
+# 2 — install
 pip install -r requirements.txt
-```
 
-### 3 — Verify your environment (recommended first-time)
-
-```bash
+# 3 — verify environment (libraries + webcam)
 python check_env.py
-```
 
-This checks all library imports and your webcam before you launch the app.
+# 4 — (optional) enable the deep-learning engine — one-time ~37 MB download
+python download_models.py
 
-### 4 — Run the application
-
-```bash
+# 5 — run
 python main.py
 ```
+
+> **Prerequisites:** Python 3.11+, a webcam, and Windows (DirectShow backend). The classical engine works immediately; step 4 is only needed for the deep engine.
 
 ---
 
 ## How to Use
 
-### Step 1 — Register a Student
+1. **Register** — in the Registration panel enter ID + name, **Start Camera**, **Take Images** (captures 50), then **Train & Save**. Tick *Augment data* for extra robustness.
+2. **Pick an engine** — choose *Classical* or *Deep Learning* from the toolbar dropdown (deep appears once weights are downloaded). Tune the **threshold** slider if needed.
+3. **Mark attendance** — **Take Attendance**; recognized students are marked automatically with an audio beep and a live counter.
+4. **Review & export** — **View Records** to browse/search by name and export to Excel; **Export All → Excel** for one workbook across all dates.
+5. **Analyse** — **Analytics** for trends and per-student rates; **Manage Students** to audit or remove enrollments.
+6. **Benchmark** — `python evaluate.py [--engine deep] [--augment]` to measure model quality.
 
-1. Open the **REGISTRATION** panel (right side of the window)
-2. Enter the student's **numeric ID** and **Full Name**
-3. Click **Start Camera** — the webcam activates with a live preview
-4. Click **Take Images** — the system automatically captures 50 face images (spaced for diversity)
-5. Click **Train & Save** — trains the LBPH model on all registered students
+---
 
-> Repeat steps 2–5 for each additional student. The model is retrained each time to include everyone.
+## Development
 
-### Step 2 — Mark Attendance
+```bash
+pip install -r requirements-dev.txt
+pytest          # run the test suite
+ruff check .    # lint
+```
 
-1. Open the **ATTENDANCE** panel (left side)
-2. (Optional) Adjust the **Recognition Threshold** slider in the toolbar — lower = stricter
-3. Click **Take Attendance** — the camera begins scanning
-4. When a registered face is detected with sufficient confidence, attendance is marked automatically with an audio beep
-5. The **Marked today** counter updates live
-6. Click **Stop** when the session is over
-
-### Step 3 — View & Export Records
-
-1. Click **View Records** on the Attendance panel
-2. Select a date from the dropdown
-3. Type in the **Search** box to filter by student name in real time
-4. Browse the color-coded table — **green** = Present, **red** = Unknown
-5. Click **Export to Excel** to save the selected date, or use **Export All → Excel** in the toolbar
-
-### Step 4 — Analytics
-
-1. Click **Analytics** in the toolbar
-2. **Daily Trend** tab — bar chart of present counts across the last 14 sessions
-3. **Per Student** tab — horizontal bar chart of attendance % per enrolled student (75% threshold line shown)
-4. **Summary** tab — key metrics: total sessions, avg rate, best/worst day, perfect attender
-
-### Step 5 — Manage Students
-
-1. Click **Manage Students** in the toolbar
-2. View all enrolled students with their image counts (green = ≥50 images, orange = fewer)
-3. Select a student and click **Delete Selected** to remove their record and all face images
+CI runs both on every push and pull request via GitHub Actions.
 
 ---
 
 ## Configuration
 
-All tuneable constants live in `config.py` — no logic changes required anywhere else:
-
-```python
-# Recognition
-CONFIDENCE_THRESHOLD = 80   # default slider position (lower = stricter)
-MIN_FACE_PX          = 50   # ignore faces smaller than 50×50 pixels
-
-# Registration
-CAPTURE_EVERY_N      = 4    # save 1 image every 4 frames (~7–8 fps at 30fps camera)
-TARGET_IMAGES        = 50   # total images captured per student
-
-# Face dimensions
-FACE_SIZE = (100, 100)      # resize all faces to this before training and prediction
-```
-
----
-
-## Monthly Progress
-
-| Month | Focus | Deliverable |
-|---|---|---|
-| **1** | Feasibility study, algorithm comparison (LBPH vs Eigenfaces vs FisherFaces), reference visit to IIT Ropar | Algorithm selection + student dataset (10 friends, ID card images) |
-| **2** | Initial prototype, LBPH integration, dataset expansion, accuracy testing under varied lighting | Working recognition model, 50 images/student, ~94% accuracy |
-| **3** | GUI polish, Analytics dashboard, Student Registry, Excel export, threshold slider, bug fixes | Final application — full-featured, stable, ready for demo |
+Everything tuneable lives in `config.py` — engine defaults, thresholds and ranges per engine, capture settings, paths, model URLs, and the UI palette. No logic changes needed to retune the system.
 
 ---
 
 ## Limitations & Future Work
 
-| Limitation | Potential Fix |
+| Limitation | Direction |
 |---|---|
-| Windows-only (DirectShow) | Replace `CAP_DSHOW` with `CAP_V4L2` for Linux / macOS |
-| Single camera only | Multi-camera support for large lecture halls |
-| No liveness detection | Anti-spoofing model to reject photo/video attacks |
-| LBPH degrades with large student sets (>200) | Switch to deep learning embeddings (FaceNet / ArcFace) |
-| No admin dashboard | Web-based dashboard for faculty to view cross-date analytics |
-| Manual training step | Auto-retrain in background after every new registration |
+| Windows-only camera backend | Abstract DirectShow vs. V4L2 for Linux / macOS |
+| No liveness detection | Add anti-spoofing to reject photo/video replay attacks |
+| Manual retrain per engine | Background auto-retrain after each enrollment |
+| Embeddings averaged into one gallery vector | Store k-NN over all embeddings for harder cases |
+| Single camera | Multi-camera support for large lecture halls |
+| Local-only records | Web dashboard for faculty cross-date analytics |
 
 ---
 
@@ -330,7 +274,7 @@ FACE_SIZE = (100, 100)      # resize all faces to this before training and predi
 
 ## License
 
-This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+Licensed under the **MIT License** — see [LICENSE](LICENSE).
 
 ---
 

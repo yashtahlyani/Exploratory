@@ -9,6 +9,12 @@ Run this once before launching the app to verify all dependencies and hardware.
 import sys
 import importlib
 
+# Windows consoles default to cp1252 and crash on ✓/✗/─ — force UTF-8 output.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 _DEPENDENCIES = [
     # (import_path,  pip_package,               label)
     ("cv2",          "opencv-contrib-python",   "OpenCV core"),
@@ -18,6 +24,7 @@ _DEPENDENCIES = [
     ("pandas",       "pandas",                  "pandas"),
     ("openpyxl",     "openpyxl",                "openpyxl (Excel export)"),
     ("matplotlib",   "matplotlib",              "matplotlib (analytics charts)"),
+    ("sklearn",      "scikit-learn",            "scikit-learn (evaluation metrics)"),
     ("tkinter",      None,                      "Tkinter (GUI — built-in)"),
 ]
 
@@ -71,6 +78,20 @@ def _check_camera() -> bool:
         return False
 
 
+def _check_deep_models():
+    """Optional — the deep-learning engine needs downloaded ONNX weights."""
+    import os
+    from config import YUNET_MODEL, SFACE_MODEL
+    _section("Deep-learning engine (optional)")
+    have_yunet = os.path.exists(YUNET_MODEL)
+    have_sface = os.path.exists(SFACE_MODEL)
+    print(f"  {'✓' if have_yunet else '·'}  YuNet detector  ({YUNET_MODEL})")
+    print(f"  {'✓' if have_sface else '·'}  SFace recognizer ({SFACE_MODEL})")
+    if not (have_yunet and have_sface):
+        print("     → run  python download_models.py  to enable the deep engine")
+        print("       (the classical engine works without these)")
+
+
 def main() -> bool:
     print("\n  Face Recognition Attendance System — Environment Check")
     print("=" * 54)
@@ -78,6 +99,7 @@ def main() -> bool:
     py_ok  = _check_python()
     lib_ok = _check_imports()
     cam_ok = _check_camera()
+    _check_deep_models()
 
     print("\n" + "=" * 54)
     if py_ok and lib_ok and cam_ok:

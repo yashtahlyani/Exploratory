@@ -1,0 +1,23 @@
+[project]
+name = "face-attendance"
+version = "3.0.0"
+description = "Dual-engine (classical + deep-learning) face-recognition attendance system"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["notebooks", "__pycache__"]
+
+[tool.ruff.lint]
+# Pyflakes (F) + a pragmatic subset of pycodestyle errors (E).
+select = ["E", "F", "W"]
+ignore = [
+    "E501",   # line length handled by formatter, not enforced
+    "E741",   # ambiguous variable names (l, I) — fine in short comprehensions
+    "E702",   # multiple statements per line — used deliberately for compact plotting code
+]

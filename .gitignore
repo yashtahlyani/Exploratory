@@ -18,6 +18,20 @@ trainer/
 Attendance/
 student_details.csv
 
+# Downloaded model weights (fetched via download_models.py)
+models/
+
+# Logs
+*.log
+
+# Generated evaluation figures (re-created by evaluate.py)
+assets/confusion_matrix_*.png
+
+# Test / lint / notebook caches
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
 # Claude Code
 .claude/
 

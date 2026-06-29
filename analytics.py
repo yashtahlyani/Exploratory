@@ -10,7 +10,7 @@ import pandas as pd
 
 from config import (
     ATTENDANCE_DIR, STUDENT_CSV,
-    BG_DARK, BG_PANEL, BG_CARD, FG_WHITE, FG_MUTED,
+    BG_DARK, BG_PANEL, FG_WHITE, FG_MUTED,
     GREEN, ACCENT, ACCENT2, ORANGE,
 )
 

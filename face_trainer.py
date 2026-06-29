@@ -1,64 +1,44 @@
-import os
+"""Backward-compatibility shim.
+
+The training/recognition logic now lives in the :mod:`core` package, which
+powers both the GUI and the evaluation scripts. This module is kept so that
+older imports (``from face_trainer import FaceTrainer``) keep working, but it
+simply delegates to :class:`core.recognizers.LBPHRecognizer`.
+
+New code should use :class:`core.pipeline.RecognitionPipeline` instead.
+"""
+
+from __future__ import annotations
+
 import cv2
 import numpy as np
-from PIL import Image
 
-from config import FACE_SIZE, DATASET_DIR, TRAINER_DIR, MODEL_PATH
+from config import FACE_SIZE, MODEL_PATH, TRAINER_DIR, DATASET_DIR
+from core import dataset as ds
+from core.recognizers import LBPHRecognizer
 
 
 class FaceTrainer:
     DATASET_DIR = DATASET_DIR
     TRAINER_DIR = TRAINER_DIR
-    MODEL_PATH  = MODEL_PATH
+    MODEL_PATH = MODEL_PATH
 
-    def get_images_and_labels(self) -> tuple[list[np.ndarray], np.ndarray]:
-        image_paths = [
-            os.path.join(self.DATASET_DIR, f)
-            for f in os.listdir(self.DATASET_DIR)
-            if f.lower().endswith(".jpg")
-        ]
+    def __init__(self):
+        self._rec = LBPHRecognizer()
 
-        face_samples: list[np.ndarray] = []
-        ids: list[int] = []
-
-        for path in image_paths:
-            parts = os.path.basename(path).split(".")
-            try:
-                student_id = int(parts[1])
-            except (IndexError, ValueError):
-                continue
-
-            pil_img   = Image.open(path).convert("L")
-            resized   = pil_img.resize(FACE_SIZE, Image.LANCZOS)
-            img_array = np.array(resized, dtype="uint8")
-
-            face_samples.append(img_array)
-            ids.append(student_id)
-
-        return face_samples, np.array(ids)
-
-    def train(self) -> int:
-        """Train the LBPH model and persist it; returns the number of unique students."""
-        os.makedirs(self.TRAINER_DIR, exist_ok=True)
-        faces, ids = self.get_images_and_labels()
-
-        if len(faces) == 0:
-            raise ValueError("No face images found in the dataset folder.")
-
-        recognizer = cv2.face.LBPHFaceRecognizer_create()
-        recognizer.train(faces, ids)
-        recognizer.write(self.MODEL_PATH)
-        return len(set(ids.tolist()))
+    def train(self, augment: bool = False) -> int:
+        """Train the LBPH model; returns the number of unique students."""
+        return self._rec.train(ds.list_samples(), augment=augment)
 
     def model_exists(self) -> bool:
-        return os.path.exists(self.MODEL_PATH)
+        return self._rec.model_exists()
 
     def load_recognizer(self):
-        recognizer = cv2.face.LBPHFaceRecognizer_create()
-        recognizer.read(self.MODEL_PATH)
-        return recognizer
+        """Return a raw, loaded ``cv2`` LBPH recognizer (legacy callers)."""
+        self._rec.load()
+        return self._rec._model            # noqa: SLF001 — intentional legacy access
 
     @staticmethod
     def prepare_face(gray_roi: np.ndarray) -> np.ndarray:
-        """Resize a face ROI to the training size before prediction."""
+        """Resize a grayscale face ROI to the training size."""
         return cv2.resize(gray_roi, FACE_SIZE, interpolation=cv2.INTER_LANCZOS4)

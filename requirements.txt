@@ -1,13 +1,17 @@
-# Core computer-vision and ML
-opencv-contrib-python>=4.8.0   # Haar cascade + LBPH face recognizer
+# ── Core computer-vision & deep learning ──────────────────────────────────────
+# opencv-contrib ships BOTH engines used by this project:
+#   • Classical: Haar Cascade detector + LBPH recognizer
+#   • Deep:      FaceDetectorYN (YuNet) + FaceRecognizerSF (SFace)  — CPU, no GPU
+opencv-contrib-python>=4.8.0
 
-# Image handling
+# ── Image handling ────────────────────────────────────────────────────────────
 Pillow>=10.0.0
 numpy>=1.24.0
 
-# Data / attendance records
+# ── Data / attendance records ─────────────────────────────────────────────────
 pandas>=2.0.0
 openpyxl>=3.1.0                # Excel export (pandas xlsx backend)
 
-# Analytics charts
-matplotlib>=3.7.0              # Daily trend + per-student attendance charts (TkAgg)
+# ── Analytics & evaluation ────────────────────────────────────────────────────
+matplotlib>=3.7.0             # analytics charts + confusion-matrix plots
+scikit-learn>=1.3.0           # precision/recall/F1 + classification report
