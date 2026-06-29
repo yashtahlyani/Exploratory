@@ -1,4 +1,5 @@
 import os
+import re
 import pandas as pd
 from datetime import datetime
 
@@ -12,22 +13,22 @@ class AttendanceManager:
         os.makedirs(ATTENDANCE_DIR, exist_ok=True)
         self._marked_today: set = set()
 
-    # ── internal helpers ──────────────────────────────────────────────────────
+    # ── internal ──────────────────────────────────────────────────────────────
 
     def _today_file(self) -> str:
         date_str = datetime.now().strftime("%d-%m-%Y")
         return os.path.join(ATTENDANCE_DIR, f"Attendance_{date_str}.csv")
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # ── marking ───────────────────────────────────────────────────────────────
 
     def mark_attendance(self, student_id: int, name: str) -> bool:
-        """Mark attendance for a student; returns True only if newly marked."""
+        """Mark attendance; returns True only if newly marked this session."""
         key = (student_id, datetime.now().strftime("%d-%m-%Y"))
         if key in self._marked_today:
             return False
 
         file_path = self._today_file()
-        now = datetime.now().strftime("%H:%M:%S")
+        now       = datetime.now().strftime("%H:%M:%S")
 
         if os.path.exists(file_path):
             df = pd.read_csv(file_path)
@@ -45,6 +46,8 @@ class AttendanceManager:
         self._marked_today.add(key)
         return True
 
+    # ── querying ──────────────────────────────────────────────────────────────
+
     def get_today_records(self) -> pd.DataFrame:
         file_path = self._today_file()
         if os.path.exists(file_path):
@@ -52,7 +55,8 @@ class AttendanceManager:
         return pd.DataFrame(columns=_COLUMNS)
 
     def list_attendance_files(self) -> list[str]:
-        files = [f for f in os.listdir(ATTENDANCE_DIR) if f.endswith(".csv")]
+        files = [f for f in os.listdir(ATTENDANCE_DIR)
+                 if f.endswith(".csv")]
         return sorted(files, reverse=True)
 
     def load_file(self, filename: str) -> pd.DataFrame:
@@ -61,19 +65,42 @@ class AttendanceManager:
             return pd.read_csv(path)
         return pd.DataFrame(columns=_COLUMNS)
 
+    # ── export ────────────────────────────────────────────────────────────────
+
     def export_to_excel(self, filename: str) -> str:
-        """Export a CSV attendance file to .xlsx; returns the output path."""
-        df = self.load_file(filename)
-        xlsx_name = filename.replace(".csv", ".xlsx")
-        out_path  = os.path.join(ATTENDANCE_DIR, xlsx_name)
-
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Attendance")
-            ws = writer.sheets["Attendance"]
-
-            # column widths
-            for col in ws.columns:
-                max_len = max(len(str(cell.value or "")) for cell in col)
-                ws.column_dimensions[col[0].column_letter].width = max_len + 4
-
+        """Export a single CSV to .xlsx; returns the output path."""
+        df       = self.load_file(filename)
+        out_name = filename.replace(".csv", ".xlsx")
+        out_path = os.path.join(ATTENDANCE_DIR, out_name)
+        self._write_xlsx({_date_from_filename(filename): df}, out_path)
         return out_path
+
+    def export_all_to_excel(self) -> str:
+        """Export every attendance CSV into one workbook (one sheet per date).
+
+        Returns the output path.
+        """
+        files    = self.list_attendance_files()
+        sheets   = {_date_from_filename(f): self.load_file(f) for f in files}
+        out_path = os.path.join(ATTENDANCE_DIR, "Attendance_All.xlsx")
+        self._write_xlsx(sheets, out_path)
+        return out_path
+
+    @staticmethod
+    def _write_xlsx(sheets: dict[str, pd.DataFrame], out_path: str):
+        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                safe = sheet_name[:31]   # Excel sheet name limit
+                df.to_excel(writer, index=False, sheet_name=safe)
+                ws = writer.sheets[safe]
+                for col in ws.columns:
+                    max_len = max(
+                        (len(str(cell.value or "")) for cell in col), default=0
+                    )
+                    ws.column_dimensions[col[0].column_letter].width = max_len + 4
+
+
+def _date_from_filename(filename: str) -> str:
+    """Extract 'DD-MM-YYYY' from 'Attendance_DD-MM-YYYY.csv'."""
+    m = re.match(r"Attendance_(\d{2}-\d{2}-\d{4})\.csv$", filename)
+    return m.group(1) if m else filename.replace(".csv", "")

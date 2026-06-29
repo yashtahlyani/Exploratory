@@ -9,12 +9,21 @@ from datetime import datetime
 
 from face_trainer import FaceTrainer
 from attendance_manager import AttendanceManager
+from analytics import AnalyticsWindow
+from student_registry import StudentRegistryWindow
 from config import (
     CONFIDENCE_THRESHOLD, MIN_FACE_PX, CAPTURE_EVERY_N, TARGET_IMAGES,
     DATASET_DIR, STUDENT_CSV,
     BG_DARK, BG_PANEL, BG_CARD,
     ACCENT, ACCENT2, FG_WHITE, FG_MUTED, GREEN, ORANGE, PURPLE,
 )
+
+# optional Windows audio feedback
+try:
+    import winsound
+    _BEEP = lambda: winsound.Beep(1000, 180)
+except ImportError:
+    _BEEP = lambda: None
 
 CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
@@ -23,8 +32,8 @@ class AttendanceApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Face Recognition Based Attendance System")
-        self.root.geometry("1200x720")
-        self.root.minsize(1000, 640)
+        self.root.geometry("1200x760")
+        self.root.minsize(1000, 660)
         self.root.configure(bg=BG_DARK)
 
         self.trainer      = FaceTrainer()
@@ -44,6 +53,9 @@ class AttendanceApp:
         self.recognizer      = None
         self._student_map: dict = {}
 
+        # live-tuneable confidence threshold
+        self._conf_threshold = tk.IntVar(value=CONFIDENCE_THRESHOLD)
+
         self.student_id   = tk.StringVar()
         self.student_name = tk.StringVar()
 
@@ -55,6 +67,7 @@ class AttendanceApp:
 
     def _build_ui(self):
         self._build_header()
+        self._build_toolbar()
         body = tk.Frame(self.root, bg=BG_DARK)
         body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self._build_attendance_panel(body)
@@ -82,6 +95,53 @@ class AttendanceApp:
         self.date_lbl  = tk.Label(right, font=("Segoe UI", 9),  fg=FG_MUTED, bg=BG_PANEL)
         self.date_lbl.pack(anchor="e")
 
+    def _build_toolbar(self):
+        """Thin secondary bar with global action buttons."""
+        bar = tk.Frame(self.root, bg=BG_CARD, height=38)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+
+        inner = tk.Frame(bar, bg=BG_CARD)
+        inner.pack(side="left", padx=12, pady=4)
+
+        self._toolbar_btn(inner, "Analytics",        "#8957e5", self._open_analytics).pack(side="left", padx=4)
+        self._toolbar_btn(inner, "Manage Students",  ACCENT2,   self._open_student_registry).pack(side="left", padx=4)
+        self._toolbar_btn(inner, "Export All →Excel", GREEN,    self._export_all_excel).pack(side="left", padx=4)
+
+        # threshold control (right side of toolbar)
+        right = tk.Frame(bar, bg=BG_CARD)
+        right.pack(side="right", padx=16, pady=3)
+        tk.Label(right, text="Recognition Threshold:",
+                 font=("Segoe UI", 9), fg=FG_MUTED, bg=BG_CARD).pack(side="left")
+        self._thresh_val_lbl = tk.Label(right, width=4,
+                                        font=("Segoe UI", 9, "bold"),
+                                        fg=FG_WHITE, bg=BG_CARD)
+        self._thresh_val_lbl.pack(side="right", padx=(4, 0))
+        tk.Label(right, text="strict ←",
+                 font=("Segoe UI", 8), fg=FG_MUTED, bg=BG_CARD).pack(side="right")
+        slider = tk.Scale(right, from_=50, to=100, orient="horizontal",
+                          variable=self._conf_threshold, length=130,
+                          bg=BG_CARD, fg=FG_WHITE,
+                          troughcolor=BG_PANEL, highlightthickness=0,
+                          activebackground=ACCENT2, relief="flat",
+                          command=self._on_threshold_change)
+        slider.pack(side="right", padx=4)
+        tk.Label(right, text="→ loose",
+                 font=("Segoe UI", 8), fg=FG_MUTED, bg=BG_CARD).pack(side="right")
+        self._on_threshold_change(CONFIDENCE_THRESHOLD)   # init label
+
+    @staticmethod
+    def _toolbar_btn(parent, text, color, cmd):
+        return tk.Button(parent, text=text,
+                         font=("Segoe UI", 9, "bold"),
+                         bg=color, fg="white",
+                         activebackground=color, activeforeground="white",
+                         relief="flat", padx=10, pady=3,
+                         cursor="hand2", bd=0, command=cmd)
+
+    def _on_threshold_change(self, val):
+        self._thresh_val_lbl.config(text=str(int(float(val))))
+
     def _build_attendance_panel(self, parent):
         f = tk.Frame(parent, bg=BG_PANEL, highlightthickness=1,
                      highlightbackground="#30363d")
@@ -104,6 +164,11 @@ class AttendanceApp:
         self.att_status = tk.Label(f, text="Press Take Attendance to begin",
                                    font=("Segoe UI", 10), fg=FG_MUTED, bg=BG_PANEL)
         self.att_status.pack(pady=4)
+
+        # live marked-today counter
+        self.marked_count_lbl = tk.Label(f, text="Marked today: 0",
+                                         font=("Segoe UI", 9), fg=GREEN, bg=BG_PANEL)
+        self.marked_count_lbl.pack(pady=(0, 4))
 
         btn_row = tk.Frame(f, bg=BG_PANEL)
         btn_row.pack(pady=(2, 14))
@@ -210,7 +275,6 @@ class AttendanceApp:
         return ImageTk.PhotoImage(image=img)
 
     def _open_camera(self) -> cv2.VideoCapture | None:
-        """Open camera with DirectShow (reliable on Windows)."""
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not cap.isOpened():
             messagebox.showerror("Camera Error",
@@ -253,6 +317,11 @@ class AttendanceApp:
             return dict(zip(df["ID"].astype(int), df["Name"]))
         return {}
 
+    def _update_marked_count(self):
+        today = self.att_mgr.get_today_records()
+        self.marked_count_lbl.config(
+            text=f"Marked today: {len(today)}")
+
     # ======================================================== ATTENDANCE ====
 
     def _toggle_attendance(self):
@@ -275,12 +344,13 @@ class AttendanceApp:
         if cam is None:
             return
 
-        self.att_cam    = cam
-        self.recognizer = self.trainer.load_recognizer()
+        self.att_cam      = cam
+        self.recognizer   = self.trainer.load_recognizer()
         self._student_map = self._load_student_map()
-        self.att_running = True
+        self.att_running  = True
         self.att_btn.config(text="Stop", bg=GREEN)
         self.att_status.config(text="Scanning…", fg=FG_MUTED)
+        self._update_marked_count()
         self._att_loop()
 
     def _stop_attendance(self):
@@ -291,6 +361,7 @@ class AttendanceApp:
         self.att_btn.config(text="Take Attendance", bg=ACCENT)
         self.att_cam_lbl.config(image="", text="Camera Off", fg=FG_MUTED)
         self.att_status.config(text="Session ended.", fg=FG_MUTED)
+        self._update_marked_count()
 
     def _att_loop(self):
         if not self.att_running or self.att_cam is None:
@@ -303,22 +374,26 @@ class AttendanceApp:
 
         gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self._detect_faces(gray)
+        threshold = self._conf_threshold.get()
 
         status_text  = "No face detected"
         status_color = FG_MUTED
 
         for (x, y, w, h) in faces:
-            face_roi = FaceTrainer.prepare_face(gray[y: y + h, x: x + w])
+            face_roi        = FaceTrainer.prepare_face(gray[y: y + h, x: x + w])
             sid, confidence = self.recognizer.predict(face_roi)
 
-            if confidence < CONFIDENCE_THRESHOLD:
-                name        = self._student_map.get(sid, "Unknown")
-                conf_pct    = f"{round(100 - confidence)}%"
-                color       = (50, 205, 50)
-                newly       = self.att_mgr.mark_attendance(sid, name)
+            if confidence < threshold:
+                name         = self._student_map.get(sid, "Unknown")
+                conf_pct     = f"{round(100 - confidence)}%"
+                color        = (50, 205, 50)
+                newly        = self.att_mgr.mark_attendance(sid, name)
                 status_text  = (f"Marked: {name} ({conf_pct})"
                                 if newly else f"Already marked: {name} ({conf_pct})")
                 status_color = GREEN
+                if newly:
+                    _BEEP()
+                    self._update_marked_count()
             else:
                 name         = "Unknown"
                 conf_pct     = f"conf:{round(confidence)}"
@@ -479,7 +554,7 @@ class AttendanceApp:
             self.train_btn.config(text="Train & Save", state="normal", bg=ACCENT2)
             messagebox.showinfo(
                 "Training Complete",
-                f"Model trained successfully on {count} student(s)!\n"
+                f"Model trained on {count} student(s)!\n"
                 "You can now use Take Attendance."
             )
             self._refresh_reg_count()
@@ -497,7 +572,7 @@ class AttendanceApp:
 
         win = tk.Toplevel(self.root)
         win.title("Attendance Records")
-        win.geometry("780x560")
+        win.geometry("820x580")
         win.configure(bg=BG_DARK)
         win.grab_set()
 
@@ -505,15 +580,28 @@ class AttendanceApp:
                  font=("Segoe UI", 15, "bold"), fg=FG_WHITE, bg=BG_DARK
                  ).pack(pady=12)
 
+        # date selector
         top = tk.Frame(win, bg=BG_DARK)
-        top.pack(fill="x", padx=20, pady=(0, 8))
+        top.pack(fill="x", padx=20, pady=(0, 6))
         tk.Label(top, text="Date:", fg=FG_WHITE, bg=BG_DARK,
                  font=("Segoe UI", 10)).pack(side="left", padx=(0, 8))
         file_var = tk.StringVar(value=files[0])
         combo = ttk.Combobox(top, textvariable=file_var, values=files,
-                             width=36, state="readonly")
+                             width=34, state="readonly")
         combo.pack(side="left")
 
+        # search box
+        tk.Label(top, text="Search:", fg=FG_WHITE, bg=BG_DARK,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(20, 6))
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(top, textvariable=search_var,
+                                font=("Segoe UI", 10),
+                                bg=BG_CARD, fg=FG_WHITE,
+                                insertbackground=FG_WHITE,
+                                relief="flat", bd=6, width=18)
+        search_entry.pack(side="left")
+
+        # treeview
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Records.Treeview",
@@ -532,49 +620,97 @@ class AttendanceApp:
         sb.pack(side="right", fill="y")
 
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings",
-                            style="Records.Treeview",
-                            yscrollcommand=sb.set)
+                            style="Records.Treeview", yscrollcommand=sb.set)
         sb.config(command=tree.yview)
 
-        col_widths = {"ID": 80, "Name": 220, "Time": 130, "Status": 100}
+        col_widths = {"ID": 80, "Name": 240, "Time": 130, "Status": 100}
         for col in cols:
             tree.heading(col, text=col)
             tree.column(col, width=col_widths[col], anchor="center")
         tree.pack(side="left", fill="both", expand=True)
 
-        count_lbl = tk.Label(win, text="", fg=GREEN, bg=BG_DARK,
+        # stats label
+        stats_lbl = tk.Label(win, text="", fg=GREEN, bg=BG_DARK,
                              font=("Segoe UI", 10))
-        count_lbl.pack(pady=(0, 4))
+        stats_lbl.pack(pady=(0, 4))
 
-        def load_records(*_):
+        # store current df for search filtering
+        _current_df: list[pd.DataFrame] = [pd.DataFrame()]
+
+        def populate_tree(df: pd.DataFrame):
             tree.delete(*tree.get_children())
-            df = self.att_mgr.load_file(file_var.get())
             for _, row in df.iterrows():
-                tag = "present" if str(row.get("Status", "")).lower() == "present" \
-                      else "absent"
+                tag = ("present" if str(row.get("Status", "")).lower() == "present"
+                       else "absent")
                 tree.insert("", "end", values=tuple(row), tags=(tag,))
             tree.tag_configure("present", foreground=GREEN)
             tree.tag_configure("absent",  foreground=ACCENT)
-            count_lbl.config(text=f"Total present today: {len(df)}")
 
-        def export_excel():
+        def load_records(*_):
+            df = self.att_mgr.load_file(file_var.get())
+            _current_df[0] = df
+            search_var.set("")
+            populate_tree(df)
+            stats_lbl.config(
+                text=f"Present: {len(df)}  |  "
+                     f"Total enrolled: {len(self._load_student_map())}"
+            )
+
+        def on_search(*_):
+            q   = search_var.get().strip().lower()
+            df  = _current_df[0]
+            filtered = (
+                df[df["Name"].astype(str).str.lower().str.contains(q, na=False)]
+                if q else df
+            )
+            populate_tree(filtered)
+
+        search_var.trace_add("write", on_search)
+        combo.bind("<<ComboboxSelected>>", load_records)
+
+        # action buttons
+        btn_row = tk.Frame(win, bg=BG_DARK)
+        btn_row.pack(pady=(0, 12))
+
+        def export_selected():
             selected = file_var.get()
             if not selected:
                 return
             try:
                 out = self.att_mgr.export_to_excel(selected)
                 messagebox.showinfo("Exported",
-                                    f"Saved as:\n{os.path.abspath(out)}")
+                                    f"Saved:\n{os.path.abspath(out)}")
             except Exception as exc:
                 messagebox.showerror("Export Failed", str(exc))
 
-        btn_row = tk.Frame(win, bg=BG_DARK)
-        btn_row.pack(pady=(0, 12))
-        self._btn(btn_row, "Export to Excel", GREEN, export_excel).pack(side="left", padx=6)
-        self._btn(btn_row, "Close", FG_MUTED, win.destroy).pack(side="left", padx=6)
+        self._btn(btn_row, "Export to Excel", GREEN,
+                  export_selected).pack(side="left", padx=5)
+        self._btn(btn_row, "Close", FG_MUTED,
+                  win.destroy).pack(side="left", padx=5)
 
-        combo.bind("<<ComboboxSelected>>", load_records)
         load_records()
+
+    # =================================================== TOOLBAR ACTIONS ====
+
+    def _open_analytics(self):
+        AnalyticsWindow(self.root)
+
+    def _open_student_registry(self):
+        StudentRegistryWindow(self.root, on_change=self._refresh_reg_count)
+
+    def _export_all_excel(self):
+        files = self.att_mgr.list_attendance_files()
+        if not files:
+            messagebox.showinfo("No Records", "No attendance records to export.")
+            return
+        try:
+            out = self.att_mgr.export_all_to_excel()
+            messagebox.showinfo(
+                "All Records Exported",
+                f"{len(files)} session(s) exported to:\n{os.path.abspath(out)}"
+            )
+        except Exception as exc:
+            messagebox.showerror("Export Failed", str(exc))
 
     # =========================================================== lifecycle ===
 
